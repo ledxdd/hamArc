@@ -5,6 +5,10 @@
 #include <cstring>
 #include <cstdint>
 #include <algorithm>
+#include <utility>
+#include <ios>
+#include <stdexcept>
+#include <iterator>
 
 uint8_t EncodeNibble(uint8_t nibble) {
     uint8_t d1 = (nibble >> 0) & 1;
