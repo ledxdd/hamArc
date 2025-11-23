@@ -7,8 +7,23 @@
 #include <algorithm>
 #include <utility>
 #include <ios>
-#include <stdexcept>
 #include <iterator>
+
+uint8_t CalculateParityBits(uint8_t d1, uint8_t d2, uint8_t d3, uint8_t d4) {
+    uint8_t p1 = d1 ^ d2 ^ d4;
+    uint8_t p2 = d1 ^ d3 ^ d4;
+    uint8_t p4 = d2 ^ d3 ^ d4;
+    return (p1 << 1) | (p2 << 2) | (p4 << 4);
+}
+
+uint8_t CalculateOverallParity(uint8_t code) {
+    uint8_t overall = 0;
+    while (code) {
+        overall ^= code & 1;
+        code >>= 1;
+    }
+    return overall;
+}
 
 uint8_t EncodeNibble(uint8_t nibble) {
     uint8_t d1 = (nibble >> 0) & 1;
@@ -16,18 +31,10 @@ uint8_t EncodeNibble(uint8_t nibble) {
     uint8_t d3 = (nibble >> 2) & 1;
     uint8_t d4 = (nibble >> 3) & 1;
 
-    uint8_t p1 = d1 ^ d2 ^ d4;
-    uint8_t p2 = d1 ^ d3 ^ d4;
-    uint8_t p4 = d2 ^ d3 ^ d4;
-
-    uint8_t code = (p1 << 1) | (p2 << 2) | (d1 << 3) | (p4 << 4) |
-                   (d2 << 5) | (d3 << 6) | (d4 << 7);
-
-    uint8_t overall = 0;
-    uint8_t temp = code;
-    while (temp) { overall ^= temp & 1; temp >>= 1; }
-
-    return code | (overall << 0);
+    uint8_t parity = CalculateParityBits(d1, d2, d3, d4);
+    uint8_t code = parity | (d1 << 3) | (d2 << 5) | (d3 << 6) | (d4 << 7);
+    
+    return code | CalculateOverallParity(code);
 }
 
 std::vector<uint8_t> Encode(const std::vector<uint8_t>& data) {
@@ -40,55 +47,55 @@ std::vector<uint8_t> Encode(const std::vector<uint8_t>& data) {
     return out;
 }
 
+struct DecodedBits {
+    uint8_t p0, p1, p2, d1, p4, d2, d3, d4;
+};
+
+DecodedBits ExtractBits(uint8_t code) {
+    DecodedBits bits{};
+    bits.p0 = (code >> 0) & 1;
+    bits.p1 = (code >> 1) & 1;
+    bits.p2 = (code >> 2) & 1;
+    bits.d1 = (code >> 3) & 1;
+    bits.p4 = (code >> 4) & 1;
+    bits.d2 = (code >> 5) & 1;
+    bits.d3 = (code >> 6) & 1;
+    bits.d4 = (code >> 7) & 1;
+    return bits;
+}
+
+uint8_t CalculateSyndrome(const DecodedBits& bits) {
+    uint8_t s1 = bits.p1 ^ bits.d1 ^ bits.d2 ^ bits.d4;
+    uint8_t s2 = bits.p2 ^ bits.d1 ^ bits.d3 ^ bits.d4;
+    uint8_t s4 = bits.p4 ^ bits.d2 ^ bits.d3 ^ bits.d4;
+    return (s4 << 2) | (s2 << 1) | s1;
+}
+
+uint8_t BuildNibble(uint8_t d1, uint8_t d2, uint8_t d3, uint8_t d4) {
+    return (d4 << 3) | (d3 << 2) | (d2 << 1) | d1;
+}
+
 int DecodeNibble(uint8_t code, uint8_t& corrected) {
-    uint8_t p0 = (code >> 0) & 1;
-    uint8_t p1 = (code >> 1) & 1;
-    uint8_t p2 = (code >> 2) & 1;
-    uint8_t d1 = (code >> 3) & 1;
-    uint8_t p4 = (code >> 4) & 1;
-    uint8_t d2 = (code >> 5) & 1;
-    uint8_t d3 = (code >> 6) & 1;
-    uint8_t d4 = (code >> 7) & 1;
+    DecodedBits bits = ExtractBits(code);
+    uint8_t syndrome = CalculateSyndrome(bits);
+    if (syndrome) code ^= (1 << (syndrome - 1));
+    bits = ExtractBits(code);
+    corrected = BuildNibble(bits.d1, bits.d2, bits.d3, bits.d4);
+    return bits.p0 ^ bits.p1 ^ bits.p2 ^ bits.d1 ^ bits.p4 ^ bits.d2 ^ bits.d3 ^ bits.d4;
+}
 
-    uint8_t s1 = p1 ^ d1 ^ d2 ^ d4;
-    uint8_t s2 = p2 ^ d1 ^ d3 ^ d4;
-    uint8_t s4 = p4 ^ d2 ^ d3 ^ d4;
-    uint8_t syndrome = (s4 << 2) | (s2 << 1) | s1;
-
-    uint8_t overall = p0 ^ p1 ^ p2 ^ d1 ^ p4 ^ d2 ^ d3 ^ d4;
-
-    if (syndrome == 0) {
-        corrected = (d4 << 3) | (d3 << 2) | (d2 << 1) | d1;
-        return (overall == 0) ? 0 : 1;
-    }
-
-    if (overall == 1) {
-        int pos = syndrome;
-        code ^= (1 << (pos - 1));
-
-        d1 = (code >> 3) & 1;
-        d2 = (code >> 5) & 1;
-        d3 = (code >> 6) & 1;
-        d4 = (code >> 7) & 1;
-
-        corrected = (d4 << 3) | (d3 << 2) | (d2 << 1) | d1;
-        return 1;
-    }
-    return -1;
+uint8_t DecodeBytePair(uint8_t low_code, uint8_t high_code) {
+    uint8_t low = 0, high = 0;
+    DecodeNibble(low_code, low);
+    DecodeNibble(high_code, high);
+    return (high << 4) | low;
 }
 
 std::vector<uint8_t> Decode(const std::vector<uint8_t>& data) {
     std::vector<uint8_t> out;
     out.reserve(data.size() / 2);
-
     for (size_t i = 0; i < data.size(); i += 2) {
-        uint8_t low = 0, high = 0;
-        int e1 = DecodeNibble(data[i], low);
-        int e2 = DecodeNibble(data[i + 1], high);
-        if (e1 == -1 || e2 == -1) {
-            throw std::runtime_error("2 mistakes");
-		}
-        out.push_back((high << 4) | low);
+        out.push_back(DecodeBytePair(data[i], data[i + 1]));
     }
     return out;
 }
@@ -136,10 +143,7 @@ private:
     bool ExtractSingleFile(std::istream& array, const FileInfo& file);
 };
 
-HamArc::HamArc(std::string archive_name) : archive_name_(std::move(archive_name)){
-    if (archive_name_.size() < 4 || archive_name_.substr(archive_name_.size() - 4) != ".haf")
-        archive_name_ += ".haf";
-}
+HamArc::HamArc(std::string archive_name) : archive_name_(std::move(archive_name)) {}
 
 void HamArc::WriteHeader(std::ostream& array, const HammingHeader& header) {
     array.write(reinterpret_cast<const char*>(&header), sizeof(header));
@@ -151,56 +155,79 @@ HammingHeader HamArc::ReadHeader(std::istream& array) {
     return header;
 }
 
-std::string HamArc::GetFileName(const FileInfo& file) {
+std::string GetFileName(const FileInfo& file) {
     return std::string(file.name, strnlen(file.name, sizeof(file.name)));
 }
 
-FileInfo HamArc::EncodeAndWriteFile(const std::string& path, std::ostream& array, uint64_t& data_offset) {
+std::string HamArc::GetFileName(const FileInfo& file) {
+    return GetFileName(file);
+}
+
+std::vector<uint8_t> ReadFileContent(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), {});
+}
 
-    std::vector<uint8_t> raw((std::istreambuf_iterator<char>(in)), {});
-
+FileInfo CreateFileInfo(const std::string& path, uint64_t offset, size_t original_size, size_t encoded_size) {
     FileInfo file{};
-    std::string name = path.substr(path.find_last_of("/\\") + 1);
-    if (name.size() > 79) name.resize(79);
+    std::string name = path.substr(path.find_last_of("/") + 1);
     std::strncpy(file.name, name.c_str(), 79);
-    file.name[79] = '\0';
+    file.original_size = original_size;
+    file.offset = offset;
+    file.encoded_size = encoded_size;
+    return file;
+}
 
+FileInfo HamArc::EncodeAndWriteFile(const std::string& path, std::ostream& array, uint64_t& data_offset) {
+    auto raw = ReadFileContent(path);
     auto encoded = Encode(raw);
-    file.original_size = raw.size();
-    file.offset = data_offset;
-    file.encoded_size = encoded.size();
-
+    
+    FileInfo file = CreateFileInfo(path, data_offset, raw.size(), encoded.size());
+    
     array.write(reinterpret_cast<const char*>(encoded.data()), encoded.size());
     data_offset += encoded.size();
     return file;
 }
 
-void HamArc::RewriteArchive(std::vector<FileInfo> table, const std::vector<std::vector<uint8_t>>& blocks) {
-    std::ofstream out(archive_name_, std::ios::binary | std::ios::trunc);
+HammingHeader CreateDefaultHeader() {
+    HammingHeader header{};
+    std::memcpy(header.magic, "HAMARC", 6);
+    header.version = 1;
+    return header;
+}
 
-    HammingHeader h{};
-    std::memcpy(h.magic, "HAMARC", 6);
-    h.version = 1;
-    WriteHeader(out, h);
-
+void WriteFileData(std::ostream& out, std::vector<FileInfo>& table, const std::vector<std::vector<uint8_t>>& blocks) {
     uint64_t data_offset = sizeof(HammingHeader);
     for (size_t i = 0; i < table.size(); ++i) {
         table[i].offset = data_offset;
         out.write(reinterpret_cast<const char*>(blocks[i].data()), blocks[i].size());
         data_offset += blocks[i].size();
     }
+}
 
-    uint64_t table_offset = out.tellp();
-    for (const auto& file : table)
+void WriteFileTable(std::ostream& out, const std::vector<FileInfo>& table) {
+    for (const auto& file : table) {
         out.write(reinterpret_cast<const char*>(&file), sizeof(file));
+    }
+}
 
-    h.file_count = static_cast<uint32_t>(table.size());
-    h.table_offset = table_offset;
-    h.table_size = table.size() * sizeof(FileInfo);
-
+void HamArc::RewriteArchive(std::vector<FileInfo> table, const std::vector<std::vector<uint8_t>>& blocks) {
+    std::ofstream out(archive_name_, std::ios::binary | std::ios::trunc);
+    
+    HammingHeader header = CreateDefaultHeader();
+    WriteHeader(out, header);
+    
+    WriteFileData(out, table, blocks);
+    
+    uint64_t table_offset = out.tellp();
+    WriteFileTable(out, table);
+    
+    header.file_count = static_cast<uint32_t>(table.size());
+    header.table_offset = table_offset;
+    header.table_size = table.size() * sizeof(FileInfo);
+    
     out.seekp(0);
-    WriteHeader(out, h);
+    WriteHeader(out, header);
 }
 
 std::vector<FileInfo> HamArc::LoadFileTable(std::istream& array) {
@@ -213,37 +240,36 @@ std::vector<FileInfo> HamArc::LoadFileTable(std::istream& array) {
     return table;
 }
 
-bool HamArc::ExtractSingleFile(std::istream& array, const FileInfo& file) {
+std::vector<uint8_t> ReadEncodedFile(std::istream& array, const FileInfo& file) {
     array.seekg(file.offset);
     std::vector<uint8_t> enc(file.encoded_size);
     array.read(reinterpret_cast<char*>(enc.data()), file.encoded_size);
+    return enc;
+}
 
-    std::vector<uint8_t> dec = Decode(enc);
-
-    std::string out_name = GetFileName(file);
-    std::ofstream out(out_name, std::ios::binary);
+bool HamArc::ExtractSingleFile(std::istream& array, const FileInfo& file) {
+    auto enc = ReadEncodedFile(array, file);
+    auto dec = Decode(enc);
+    std::ofstream out(GetFileName(file), std::ios::binary);
     out.write(reinterpret_cast<const char*>(dec.data()), dec.size());
-    return !!out;
+    return true;
 }
 
 void HamArc::Create(const std::vector<std::string>& files) {
     std::ofstream array(archive_name_, std::ios::binary | std::ios::trunc);
-
-    HammingHeader header{};
-    std::memcpy(header.magic, "HAMARC", 6);
-    header.version = 1;
+    
+    HammingHeader header = CreateDefaultHeader();
     WriteHeader(array, header);
-
+    
     uint64_t data_offset = sizeof(HammingHeader);
     std::vector<FileInfo> table;
-
-    for (const auto& file : files)
+    for (const auto& file : files) {
         table.push_back(EncodeAndWriteFile(file, array, data_offset));
-
+    }
+    
     uint64_t table_offset = array.tellp();
-    for (const auto& file : table)
-        array.write(reinterpret_cast<const char*>(&file), sizeof(file));
-
+    WriteFileTable(array, table);
+    
     header.file_count = static_cast<uint32_t>(table.size());
     header.table_offset = table_offset;
     header.table_size = table.size() * sizeof(FileInfo);
@@ -263,42 +289,52 @@ void HamArc::List() {
     }
 }
 
+bool ShouldExtractFile(const FileInfo& file, const std::vector<std::string>& files) {
+    return files.empty() || std::find(files.begin(), files.end(), GetFileName(file)) != files.end();
+}
+
 bool HamArc::Extract(const std::vector<std::string>& files) {
     std::ifstream array(archive_name_, std::ios::binary);
-
     auto table = LoadFileTable(array);
 
     for (const auto& file : table) {
-        std::string name = GetFileName(file);
-        if (!files.empty() && std::find(files.begin(), files.end(), name) == files.end())
-            continue;
-
-        ExtractSingleFile(array, file);
+        if (ShouldExtractFile(file, files)) {
+            ExtractSingleFile(array, file);
+        }
     }
     return true;
 }
 
+uint64_t CalculateAppendOffset(const std::vector<FileInfo>& table) {
+    return table.back().offset + table.back().encoded_size;
+}
+
 bool HamArc::Append(const std::vector<std::string>& files) {
     std::fstream array(archive_name_, std::ios::binary | std::ios::in | std::ios::out);
-
-    HammingHeader header = ReadHeader(array);
-    array.seekg(header.table_offset);
-
-    std::vector<FileInfo> table(header.file_count);
-    for (auto& file : table) {
-		array.read(reinterpret_cast<char*>(&file), sizeof(file));
-	}
-
-    uint64_t data_offset = sizeof(HammingHeader);
-    if (!table.empty())
-        data_offset = table.back().offset + table.back().encoded_size;
-
+    auto table = LoadFileTable(array);
+    
+    uint64_t data_offset = CalculateAppendOffset(table);
     array.seekp(data_offset);
-    for (const auto& file : files)
+    
+    for (const auto& file : files) {
         table.push_back(EncodeAndWriteFile(file, array, data_offset));
+    }
 
     RewriteArchive(std::move(table), {});
     return true;
+}
+
+std::vector<uint8_t> ReadFileBlock(std::istream& stream, const FileInfo& file) {
+    stream.seekg(file.offset);
+    std::vector<uint8_t> data(file.encoded_size);
+    stream.read(reinterpret_cast<char*>(data.data()), data.size());
+    return data;
+}
+
+void CollectFilesFromArchive(std::istream& stream, std::vector<FileInfo>& table, std::vector<std::vector<uint8_t>>& blocks) {
+    for (const auto& file : table) {
+        blocks.push_back(ReadFileBlock(stream, file));
+    }
 }
 
 bool HamArc::Concatenate(const std::string& other_archive) {
@@ -310,32 +346,26 @@ bool HamArc::Concatenate(const std::string& other_archive) {
 
     std::vector<FileInfo> table;
     std::vector<std::vector<uint8_t>> blocks;
-
     table.reserve(table1.size() + table2.size());
     blocks.reserve(table1.size() + table2.size());
 
-    for (const auto& file : table1) {
-        src_this.seekg(file.offset);
-        std::vector<uint8_t> data(file.encoded_size);
-        src_this.read(reinterpret_cast<char*>(data.data()), data.size());
-        table.push_back(file);
-        blocks.push_back(std::move(data));
-    }
-    for (const auto& file : table2) {
-        src_other.seekg(file.offset);
-        std::vector<uint8_t> data(file.encoded_size);
-        src_other.read(reinterpret_cast<char*>(data.data()), data.size());
-        table.push_back(file);
-        blocks.push_back(std::move(data));
-    }
+    table = table1;
+    CollectFilesFromArchive(src_this, table1, blocks);
+    
+    table.insert(table.end(), table2.begin(), table2.end());
+    CollectFilesFromArchive(src_other, table2, blocks);
 
     RewriteArchive(std::move(table), blocks);
     return true;
 }
 
+bool ShouldDeleteFile(const FileInfo& file, const std::vector<std::string>& files_to_delete) {
+    std::string name = GetFileName(file);
+    return std::find(files_to_delete.begin(), files_to_delete.end(), name) != files_to_delete.end();
+}
+
 bool HamArc::Delete(const std::vector<std::string>& files_to_delete) {
     std::ifstream array(archive_name_, std::ios::binary);
-
     auto old_table = LoadFileTable(array);
 
     std::vector<FileInfo> new_table;
@@ -344,56 +374,61 @@ bool HamArc::Delete(const std::vector<std::string>& files_to_delete) {
     new_blocks.reserve(old_table.size());
 
     for (const auto& file : old_table) {
-        std::string name = GetFileName(file);
-        if (std::find(files_to_delete.begin(), files_to_delete.end(), name) != files_to_delete.end())
+        if (ShouldDeleteFile(file, files_to_delete)) {
             continue;
-
-        array.seekg(file.offset);
-        std::vector<uint8_t> data(file.encoded_size);
-        array.read(reinterpret_cast<char*>(data.data()), data.size());
-
+        }
         new_table.push_back(file);
-        new_blocks.push_back(std::move(data));
+        new_blocks.push_back(ReadFileBlock(array, file));
     }
 
     RewriteArchive(std::move(new_table), new_blocks);
     return true;
 }
 
-int main(int argc, char* argv[]) {
+struct ParsedArguments {
     std::string archive_name;
     std::string command;
     std::vector<std::string> files;
+};
 
+ParsedArguments ParseArguments(int argc, char* argv[]) {
+    ParsedArguments args;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg.starts_with("-f") || arg.starts_with("--file=")) {
-            if (arg.starts_with("--file=")) archive_name = arg.substr(7);
-            else if (arg.size() > 2) archive_name = arg.substr(2);
-            else if (i + 1 < argc) archive_name = argv[++i];
-        } else if (arg == "-c" || arg == "--create" || arg == "-l" || arg == "--list" ||
-                   arg == "-x" || arg == "--extract" || arg == "-a" || arg == "--append" ||
+        if (arg.substr(0, 7) == "--file=") {
+            args.archive_name = arg.substr(7);
+        } else if (arg.substr(0, 2) == "-f") {
+            args.archive_name = arg.size() > 2 ? arg.substr(2) : argv[++i];
+        } else if (arg == "-c" || arg == "--create" || arg == "-l" || arg == "--list" || 
+                   arg == "-x" || arg == "--extract" || arg == "-a" || arg == "--append" || 
                    arg == "-d" || arg == "--delete" || arg == "-A" || arg == "--concatenate") {
-            command = arg;
+            args.command = arg;
         } else {
-            files.push_back(arg);
+            args.files.push_back(arg);
         }
     }
+    return args;
+}
 
-    HamArc arc(archive_name);
+void ExecuteCommand(HamArc& arc, const std::string& command, const std::vector<std::string>& files) {
+    if (command == "-c" || command == "--create") {
+        arc.Create(files);
+    } else if (command == "-l" || command == "--list") {
+        arc.List();
+    } else if (command == "-x" || command == "--extract") {
+        arc.Extract(files);
+    } else if (command == "-a" || command == "--append") {
+        arc.Append(files);
+    } else if (command == "-d" || command == "--delete") {
+        arc.Delete(files);
+    } else if (command == "-A" || command == "--concatenate") {
+        arc.Concatenate(files[0]);
+    }
+}
 
-	if (command == "-c" || command == "--create") {
-		arc.Create(files);
-	} else if (command == "-l" || command == "--list") {
-		arc.List();
-	} else if (command == "-x" || command == "--extract") {
-		arc.Extract(files);
-	} else if (command == "-a" || command == "--append") {
-		arc.Append(files);
-	} else if (command == "-d" || command == "--delete") {
-		arc.Delete(files);
-	} else if (command == "-A" || command == "--concatenate") {
-		arc.Concatenate(files[0]);
-	}
+int main(int argc, char* argv[]) {
+    auto args = ParseArguments(argc, argv);
+    HamArc arc(args.archive_name);
+    ExecuteCommand(arc, args.command, args.files);
     return 0;
 }
